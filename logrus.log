@@ -1,0 +1,2 @@
+{"db":"mysql","level":"info","msg":"SELECT goods_id,keywords,goods_name FROM goods_0 WHERE goods_name like ","source":"root:ef08ef776ce21a44@tcp(127.0.0.1:3306)/after","time":"2023-07-09T18:46:04+08:00"}
+{"db":"mysql","level":"info","msg":"SELECT goods_id,keywords,goods_name FROM goods_0 WHERE goods_name like ","source":"root:ef08ef776ce21a44@tcp(127.0.0.1:3306)/after","time":"2023-07-09T18:46:06+08:00"}
