@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
  	"time"
-    // "os"
+    "github.com/didip/tollbooth"
     "github.com/sirupsen/logrus"
 	"net/http"
 	"strings"
@@ -18,16 +18,22 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"flag"
 	"github.com/elastic/go-elasticsearch"
 	"github.com/farmerx/elasticsql"
 	"github.com/spf13/cast"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
-var rows *sql.Rows
+
+var port *string
+var num *int
 var logs = logrus.New()
 
 //主函数
 func main() {
+    port = flag.String("p", "8086", "监听服务端口")
+    num = flag.Int("n", 1000, "a request limiter per .")
+    flag.Parse()
     
     logs.SetFormatter(&logrus.JSONFormatter{})
     
@@ -51,14 +57,16 @@ func main() {
     // }
     
     
-	http.HandleFunc("/", querySql)
-	link := "http://127.0.0.1:8785"
-	log.Println("监听端口", link)
-	listenErr := http.ListenAndServe(":8785", nil)
+	http.Handle("/", tollbooth.LimitFuncHandler(tollbooth.NewLimiter(float64(*num), nil), querySql))
+	addr := fmt.Sprintf(":%v", *port)
+	log.Println("监听端口 0.0.0.0", addr)
+	log.Println("limiter per", float64(*num))
+	listenErr := http.ListenAndServe(addr, nil)
 	if listenErr != nil {
 		log.Fatal("ListenAndServe: ", listenErr)
 	}
 }
+
 
 type JsonRes struct {
 	Code int         `json:"code"`
@@ -68,19 +76,13 @@ type JsonRes struct {
 
 func querySql(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("content-type", "text/json")
-	defer func() {
-		//捕获 panic
-		if err := recover(); err != nil {
-			log.Println("查询sql发生错误", err)
-		}
-	}()
 	if r.URL.Path != "/" {
 		w.WriteHeader(404)
 		msg, _ := json.Marshal(&JsonRes{Code: 4000, Msg: r.URL.Path + " 404 NOT FOUND !"})
 		w.Write(msg)
 		return
 	}
-
+   var rows *sql.Rows
 	r.ParseForm() // 解析参数
     // oracle,mysql,sqlsver
 	d := r.PostFormValue("d")
@@ -125,12 +127,24 @@ func querySql(w http.ResponseWriter, r *http.Request) {
 	sqls = fmt.Sprintf("%s", sqls)
 	log.Println("sql:", sqls)
 	
+	defer func() {
+		//捕获 panic
+		if err := recover(); err != nil {
+            logs.WithFields(logrus.Fields{
+                "error": err,
+                "db": d,
+                "source": s,
+            }).Info(sqls)
+		    
+			log.Println("查询sql发生错误", err)
+		}
+	}()
 	
     logs.WithFields(logrus.Fields{
         "db": d,
         "source": s,
     }).Info(sqls)
-    
+            
     if d=="es"{
     	cfg := elasticsearch.Config{
     		Addresses: []string{
@@ -309,51 +323,87 @@ func querySql(w http.ResponseWriter, r *http.Request) {
     	if err != nil {
     		panic(err)
     	}
+    	
+    	cols, _ := rows.Columns()
+    	colsize := len(cols)
+    
+    	resutData := make([](map[string]interface{}), 0)
+    	for rows.Next() {
+    		colsjson := make(map[string]interface{}, colsize)
+    		colmeta := make([]interface{}, colsize)
+    		for i := 0; i < colsize; i++ {
+    			colmeta[i] = new(interface{})
+    		}
+    		rows.Scan(colmeta...)
+    		for i := 0; i < colsize; i++ {
+    			v := colmeta[i].(*interface{})
+    			var c string
+    			switch (*v).(type) {
+    			case nil:
+    				c = ""
+    			case float64, float32:
+    				c = fmt.Sprintf("%v", *v)
+    			case int64, int32, int16:
+    				c = fmt.Sprintf("%v", *v)
+    			default:
+    				c = fmt.Sprintf("%s", *v)
+    			}
+    			colsjson[strings.ToLower(cols[i])] = c
+    		}
+    		resutData = append(resutData, colsjson)
+    		// fmt.Println(args)
+    	}
+    	
+    	msg, _ := json.Marshal(JsonRes{Code: 200, Data: resutData})
+    	w.Write(msg)
+        defer rows.Close()	
         defer sqlDB.Close()
     }else{
 		db, err := sql.Open(d, s)
 		if err != nil {
 			panic(err)
 		}
-		defer db.Close()
+		
 		rows, err = db.Query(sqls)
 		if err != nil {
 			panic(err)
 		}
+		
+	    cols, _ := rows.Columns()
+    	colsize := len(cols)
+    
+    	resutData := make([](map[string]interface{}), 0)
+    	for rows.Next() {
+    		colsjson := make(map[string]interface{}, colsize)
+    		colmeta  := make([]interface{}, colsize)
+    		for i := 0; i < colsize; i++ {
+    			colmeta[i] = new(interface{})
+    		}
+    		rows.Scan(colmeta...)
+    		for i := 0; i < colsize; i++ {
+    			v := colmeta[i].(*interface{})
+    			var c string
+    			switch (*v).(type) {
+    			case nil:
+    				c = ""
+    			case float64, float32:
+    				c = fmt.Sprintf("%v", *v)
+    			case int64, int32, int16:
+    				c = fmt.Sprintf("%v", *v)
+    			default:
+    				c = fmt.Sprintf("%s", *v)
+    			}
+    			colsjson[strings.ToLower(cols[i])] = c
+    		}
+    		resutData = append(resutData, colsjson)
+    		// fmt.Println(args)
+    	}
+    	
+    	msg, _ := json.Marshal(JsonRes{Code: 200, Data: resutData})
+    	w.Write(msg)
+        defer rows.Close()	
+        defer db.Close()
     }
 
-
-	defer rows.Close()
-	cols, _ := rows.Columns()
-	colsize := len(cols)
-
-	resutData := make([](map[string]interface{}), 0)
-	for rows.Next() {
-		colsjson := make(map[string]interface{}, colsize)
-		colmeta := make([]interface{}, colsize)
-		for i := 0; i < colsize; i++ {
-			colmeta[i] = new(interface{})
-		}
-		rows.Scan(colmeta...)
-		for i := 0; i < colsize; i++ {
-			v := colmeta[i].(*interface{})
-			var c string
-			switch (*v).(type) {
-			case nil:
-				c = ""
-			case float64, float32:
-				c = fmt.Sprintf("%v", *v)
-			case int64, int32, int16:
-				c = fmt.Sprintf("%v", *v)
-			default:
-				c = fmt.Sprintf("%s", *v)
-			}
-			colsjson[strings.ToLower(cols[i])] = c
-		}
-		resutData = append(resutData, colsjson)
-		// fmt.Println(args)
-	}
-	msg, _ := json.Marshal(JsonRes{Code: 200, Data: resutData})
-	w.Write(msg)
 	return
 }
