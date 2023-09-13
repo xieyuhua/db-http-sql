@@ -1,4 +1,4 @@
-# db-post-sql
+# db-http-sql
 ![image](https://user-images.githubusercontent.com/29120060/217162439-9548ad0a-1861-4817-a9b9-254e353766c5.png)
 
     (MySQL,Oracle,sqlserver,clickhouse,elasticsearch,es)数据服务 —— 写个 SQL 即可发布成 API
