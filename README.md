@@ -14,7 +14,7 @@
 //tcp://127.0.0.1:42722?debug=false&database=azdb&write_timeout=5&compress=true&username=default&password=xieyuhua
 //127.0.0.1:9200
 
-[root@Web6 oraclesql]# ./oraclesql 
+[root@Web6 oraclesql]# ./db-http-sql 
 2023/02/02 10:41:31 监听端口 http://127.0.0.1:8086
 ```
 
