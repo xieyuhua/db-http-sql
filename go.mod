@@ -1,4 +1,4 @@
-module oraclesql
+module db-http-sql
 
 go 1.18
 
