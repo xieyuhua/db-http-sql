@@ -1,13 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
- 	"time"
-    "github.com/didip/tollbooth"
     "github.com/sirupsen/logrus"
-	"net/http"
+	"github.com/gofiber/fiber/v2"
+	"time"
 	"strings"
 	"database/sql"
 	_ "github.com/ClickHouse/clickhouse-go"
@@ -15,26 +13,75 @@ import (
     _ "github.com/go-sql-driver/mysql"
 	oracle "github.com/wdrabbit/gorm-oracle"
 	"gorm.io/gorm"
-	"context"
-	"crypto/tls"
-	"net"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
+// 	"net"
 	"flag"
-	"github.com/elastic/go-elasticsearch"
-	"github.com/farmerx/elasticsql"
-	"github.com/spf13/cast"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
-
+var allowip *string
 var port *string
-var num *int
+var dns *string
+var maxnum *int
+var dbtype *string
 var logs = logrus.New()
+var err error
+var db *sql.DB
+var dbh2 *gorm.DB
+var debug *bool
 
 //主函数
 func main() {
-    port = flag.String("p", "8086", "监听服务端口")
-    num = flag.Int("n", 1000, "a request limiter per .")
+    debug   = flag.Bool("d", true, "debug msg")
+    port    = flag.String("p", "8004", "服务端口")
+    maxnum  = flag.Int("i", 1000, "SlidingWindow 100/30 s")
+    allowip = flag.String("w", "", "允许访问的ip逗号隔开")
+    dbtype  = flag.String("t", "mysql", "mysql、sqlserver、oracle、clickhouse")
+    dns     = flag.String("dns", "root:1b0ef5fde8798137@tcp(127.0.0.1:3306)/umami", "ClickHouse   tcp://127.0.0.1:42722?debug=false&database=azom_db&write_timeout=5&compress=true&username=default&password=password \nsqlserver    sqlserver://kangshu:bzynj@127.0.0.1:1433/?database=weixin&encrypt=disable \nMysql        root:root@tcp(127.0.0.1:3306)/test \nOracle       oracle://H2:hysoft@127.0.0.1:3521/hyee")
     flag.Parse()
+    // oracle,mysql,sqlsver
+	
+    app := fiber.New()
     
+    //
+    app.Use(limiter.New(limiter.Config{
+        Max:            *maxnum,
+        Expiration:     30 * time.Second,
+        LimiterMiddleware: limiter.SlidingWindow{},
+    }))
+    
+	//oracle://H2:hydeesoft@127.0.0.1:3521/hydee 
+	//root:ef08ef776ce21a44@tcp(127.0.0.1:3306)/after
+	//sqlserver://kangshu:bzdmmynj@127.0.0.1:1433/?database=weixin&encrypt=disable
+	//tcp://127.0.0.1:42722?debug=false&database=azmbk_com_db&write_timeout=5&compress=true&username=default&password=xieyuhua
+	//127.0.0.1:9200
+    if *dbtype == "oracle" {
+        //数据库连接
+    	dbh2, err = gorm.Open(oracle.Open(*dns), &gorm.Config{})
+    	if err != nil {
+    		panic(err)
+    	}
+        sqlDB, err := dbh2.DB()
+    	if err != nil {
+    		panic(err)
+    	}
+        sqlDB.SetMaxOpenConns(50)
+        sqlDB.SetMaxIdleConns(10)
+        sqlDB.SetConnMaxLifetime(1800 * time.Second)
+        // defer sqlDB.Close()
+    } else {
+        //数据库连接
+    	db, err = sql.Open(*dbtype, *dns)
+    	if err != nil {
+    		panic(err)
+    	}
+    	db.SetMaxOpenConns(50)//   设置连接数总数, 需要根据实际业务来测算, 应小于 mysql.max_connection (应该远远小于), 后续根据指标进行调整
+    	db.SetMaxIdleConns(10)//  设置最大空闲连接数, 该数值应该小于等于 SetMaxOpenConns 设置的值
+    // 	db.SetConnMaxLifetime(8600)// 设置连接最大生命周期, 默认为 0(不限制), 我不建议设置该值, 只有当 mysql 服务器出现问题, 会导致连接报错, 恢复后可以自动恢复正常, 而我们配置了时间也不能卡住出问题的时间, 配置小还不如使用 SetConnMaxIdleTime 来解决
+    	db.SetConnMaxIdleTime(1800 * time.Second) // 设置空闲状态最大生命周期, 该值应小于 mysql.wait_timeout 的值, 以避免被服务端断开连接, 产生报错影响业务， 一般可以配置 1天。
+    }
+    
+    
+    //日志
     logs.SetFormatter(&logrus.JSONFormatter{})
     
 	logger := &lumberjack.Logger{
@@ -47,26 +94,15 @@ func main() {
 
 	logs.SetOutput(logger) // logrus 设置日志的输出方式
     
-    
-// 	logs.Out = os.Stdout
-//     file, err := os.OpenFile("logrus.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-//     if err == nil {
-//         logs.Out = file
-//     } else {
-//         logs.Info("Failed to log to file, using default stderr")
-    // }
-    
-    
-	http.Handle("/", tollbooth.LimitFuncHandler(tollbooth.NewLimiter(float64(*num), nil), querySql))
+	
 	addr := fmt.Sprintf(":%v", *port)
-	log.Println("监听端口 0.0.0.0", addr)
-	log.Println("limiter per", float64(*num))
-	listenErr := http.ListenAndServe(addr, nil)
-	if listenErr != nil {
-		log.Fatal("ListenAndServe: ", listenErr)
-	}
-}
+	log.Println("ip:port 0.0.0.0", addr)
+	log.Println(time.Now())
+	
 
+    app.Use("/", querySql)
+    app.Listen(addr)
+}
 
 type JsonRes struct {
 	Code int         `json:"code"`
@@ -74,260 +110,68 @@ type JsonRes struct {
 	Data interface{} `json:"data"`
 }
 
-func querySql(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("content-type", "text/json")
-	if r.URL.Path != "/" {
-		w.WriteHeader(404)
-		msg, _ := json.Marshal(&JsonRes{Code: 4000, Msg: r.URL.Path + " 404 NOT FOUND !"})
-		w.Write(msg)
-		return
-	}
-   var rows *sql.Rows
-	r.ParseForm() // 解析参数
-    // oracle,mysql,sqlsver
-	d := r.PostFormValue("d")
-	d = fmt.Sprintf("%s", d)
-	log.Println("d:", d)
+// Field names should start with an uppercase letter
+type Data struct {
+    Sql string `json:"sql" xml:"sql" form:"sql"`
+}
+
+
+func querySql(c *fiber.Ctx) error {
+    //客户端ip
+    ip := c.IP() 
+    // 从控制台输出获取到的IP地址
+    c.Set("content-type", "text/json")
+    if *allowip != "" {
+        if !strings.Contains(strings.ToLower(*allowip), strings.ToLower(ip)) {
+        	return c.JSON(JsonRes{Code: 4003, Msg: "  IP NOT ALLOW !"})
+        	
+        }
+    }
+    
+	//参数绑定
+	newsqls := new(Data)
+    if err := c.BodyParser(newsqls); err != nil {
+         return c.JSON(JsonRes{Code: 4000, Msg: "  IP NOT ALLOW !"})
+    }
 	
-	driver := map[string]string{
-		"mysql":  "mysql",
-		"mssql":  "mssql",
-		"sqlserver":"sqlserver",
-		"oracle": "godror",
-		"adodb":  "adodb",
-		"clickhouse":"clickhouse",
-		"es":"elasticsearch",
-		"elasticsearch":"elasticsearch",
-	}
-	if _, ok := driver[d]; !ok {
-		w.WriteHeader(404)
-		msg, _ := json.Marshal(&JsonRes{Code: 4001, Msg: " 404 TYPE NOT FOUND !"})
-		w.Write(msg)
-		return
-	}
-	//oracle://H2:hydeesoft@127.0.0.1:3521/hydee 
-	//root:ef08ef776ce21a44@tcp(127.0.0.1:3306)/after
-	//sqlserver://kangshu:bzdmmynj@127.0.0.1:1433/?database=weixin&encrypt=disable
-	//tcp://127.0.0.1:42722?debug=false&database=azmbk_com_db&write_timeout=5&compress=true&username=default&password=xieyuhua
-	//127.0.0.1:9200
-	s := r.PostFormValue("s")
-	s = fmt.Sprintf("%s", s)
-	log.Println("s:", s)
-	
-	if s=="" {
-		w.WriteHeader(404)
-		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " 404 source NOT FOUND !"})
-		w.Write(msg)
-		return
+	sql_str := fmt.Sprintf("%s", newsqls.Sql)
+	//sql输出
+	if *debug {
+	    log.Println("sql:", sql_str)
 	}
 	
-	
-	//select * from a where id>100 limi 10
-	sqls := r.PostFormValue("sql")
-	sqls = fmt.Sprintf("%s", sqls)
-	log.Println("sql:", sqls)
+	if sql_str == "" {
+		return c.JSON(JsonRes{Code: 4000, Msg: "404 NOT FOUND !"})
+	}
 	
 	defer func() {
 		//捕获 panic
 		if err := recover(); err != nil {
             logs.WithFields(logrus.Fields{
                 "error": err,
-                "db": d,
-                "source": s,
-            }).Info(sqls)
+                "db": *dbtype,
+            }).Info(sql_str)
 		    
 			log.Println("查询sql发生错误", err)
 		}
 	}()
 	
+	//记录日志
     logs.WithFields(logrus.Fields{
-        "db": d,
-        "source": s,
-    }).Info(sqls)
-            
-    if d=="es"{
-    	cfg := elasticsearch.Config{
-    		Addresses: []string{
-    			"http://"+s,
-    		},
-    		Transport: &http.Transport{
-    			MaxIdleConnsPerHost:   10,
-    			ResponseHeaderTimeout: time.Second,
-    			DialContext:           (&net.Dialer{Timeout: time.Second}).DialContext,
-    			TLSClientConfig: &tls.Config{
-    				MaxVersion:         tls.VersionTLS11,
-    				InsecureSkipVerify: true,
-    			},
-    		},
-    	}
-    	es, err := elasticsearch.NewClient(cfg)
-    	if err != nil {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " 404 Error creating the client!"})
-    		w.Write(msg)
-    		return 
-    	}
-        esql := elasticsql.NewElasticSQL()
-        table, dsl, err := esql.SQLConvert(sqls)
-    	if err != nil {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " 404 Error SQLConvert the client!"})
-    		w.Write(msg)
-    		return 
-    	}
-    	res, err := es.Search(
-    		es.Search.WithContext(context.Background()),
-    		es.Search.WithIndex(table),
-    		es.Search.WithBody(strings.NewReader(dsl)),
-    		es.Search.WithTrackTotalHits(true),
-    		es.Search.WithPretty(),
-    	)
-    	if err != nil {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " 404 Error Search !"})
-    		w.Write(msg)
-    		return 
-    	}
-    	defer res.Body.Close()
-    
-    	if res.IsError() {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " 404 Error res!"})
-    		w.Write(msg)
-    		return 
-    	}
-    	var r map[string]interface{}
-    	if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " Error parsing the response body!"})
-    		w.Write(msg)
-    		return 
-    	}
-    	
-    	// Print the ID and document source for each hit.
-    	resutData := make([](map[string]interface{}), 0)
-    	for _, hit := range r["hits"].(map[string]interface{})["hits"].([]interface{}) {
-    		// hit.(map[string]interface{})["_source"]
-    		// hit.(map[string]interface{})["_id"]
-    		s_source :=  hit.(map[string]interface{})["_source"]
-    		
-    		//重复转一次
-    		resutData = append(resutData, s_source.(map[string]interface{}))
-    	}
-    	msg, _ := json.Marshal(JsonRes{Code: 200, Data: resutData})
-    	w.Write(msg)
-    	return
-    }
-    
-    if d=="elasticsearch"{
-    	cfg := elasticsearch.Config{
-    		Addresses: []string{
-    			"http://"+s,
-    		},
-    		Transport: &http.Transport{
-    			MaxIdleConnsPerHost:   10,
-    			ResponseHeaderTimeout: time.Second,
-    			DialContext:           (&net.Dialer{Timeout: time.Second}).DialContext,
-    			TLSClientConfig: &tls.Config{
-    				MaxVersion:         tls.VersionTLS11,
-    				InsecureSkipVerify: true,
-    			},
-    		},
-    	}
-    	es, err := elasticsearch.NewClient(cfg)
-    	if err != nil {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " 404 Error creating the client!"})
-    		w.Write(msg)
-    		return 
-    	}
-        esql := elasticsql.NewElasticSQL()
-        table, dsl, err := esql.SQLConvert(sqls)
-    	if err != nil {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " 404 Error SQLConvert the client!"})
-    		w.Write(msg)
-    		return 
-    	}
-    	res, err := es.Search(
-    		es.Search.WithContext(context.Background()),
-    		es.Search.WithIndex(table),
-    		es.Search.WithBody(strings.NewReader(dsl)),
-    		es.Search.WithTrackTotalHits(true),
-    		es.Search.WithPretty(),
-    	)
-    	if err != nil {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " 404 Error Search !"})
-    		w.Write(msg)
-    		return 
-    	}
-    	defer res.Body.Close()
-    
-    	if res.IsError() {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " 404 Error res!"})
-    		w.Write(msg)
-    		return 
-    	}
-    	var r map[string]interface{}
-    	if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
-    		w.WriteHeader(404)
-    		msg, _ := json.Marshal(&JsonRes{Code: 4002, Msg: " Error parsing the response body!"})
-    		w.Write(msg)
-    		return 
-    	}
-    	
-    	//组装r
-    	msg, _ := json.Marshal(JsonRes{Code: 200, Data: r["hits"]})
-    	fmt.Println(cast.ToString(123464))
-    	w.Write(msg)
-    	return
-    	
-    	/*
-    	// Print the ID and document source for each hit.
-    	resutData := make([](map[string]interface{}), 0)
-    	for _, hit := range r["hits"].(map[string]interface{})["hits"].([]interface{}) {
-    		// hit.(map[string]interface{})["_source"]
-    		// hit.(map[string]interface{})["_id"]
-    		s_source :=  hit.(map[string]interface{})["_source"]
-    		
-    		//重复转一次
-    		resutData = append(resutData, s_source.(map[string]interface{}))
-    	}
-    	msg, _ := json.Marshal(JsonRes{Code: 200, Data: resutData})
-    	w.Write(msg)
-    	return
-    	*/
-    }
-    
-    
-    
-    
-    
-    if d=="oracle"{
-        // 	db, err := gorm.Open(oracle.Open("oracle://H2:hydeesoft@192.168.9.3:1521/hydee"), &gorm.Config{})
-    	db, err := gorm.Open(oracle.Open(s), &gorm.Config{})
-    	if err != nil {
-    		panic(err)
-    	}
-    	// 5秒内连接没有活跃的话则自动关闭连接
-    // 	db.SetConnMaxLifetime(time.Second * 5)
-    	// rows, err := db.Raw("SELECT A .busno AS busno, NVL ( v_busno_class_set_03大.classname, '未划分' ) AS compname, NVL ( v_busno_class_set_03小.classname, '未划分' ) AS area, f_get_orgname (A .busno) AS orgname, SUM ( ROUND ( ( A .netprice * A .wareqty * A . TIMES + A .minqty * A . TIMES * A .minprice ), 2 ) ) AS netsum, COUNT (DISTINCT A .saleno) AS kll, COUNT (A .saleno) AS xscs, 1 AS days, SUM ( ROUND ( NVL ( ROUND ( ( ( CASE WHEN b.limitprice = 0 OR b.limitprice IS NULL THEN A .purprice ELSE b.limitprice END ) * ( A .wareqty + ( CASE WHEN A .stdtomin = 0 THEN 0 ELSE A .minqty / A .stdtomin END ) ) * A . TIMES ), 6 ), ROUND ( ( i.purprice * ( A .wareqty + ( CASE WHEN A .stdtomin = 0 THEN 0 ELSE A .minqty / A .stdtomin END ) ) * A . TIMES ), 6 ) ), 6 ) ) AS puramt FROM t_area r1, t_factory f, t_sale_d A LEFT JOIN t_store_i i ON A .wareid = i.wareid AND A .batid = i.batid, t_sale_h c, t_ware b, v_busno_class_set_big v_busno_class_set_03大, v_busno_class_set_mid v_busno_class_set_03中, v_busno_class_set v_busno_class_set_03小 WHERE b.wareid = A .wareid AND b.compid = c.compid AND c.saleno = A .saleno AND f.factoryid = b.factoryid AND r1.areacode = b.areacode AND A .busno = c.busno AND A .accdate = c.accdate AND ( ( 2 = 0 AND c.compid IN ( SELECT compid FROM s_user WHERE userid = 168 ) ) OR (c.compid = 2) ) AND c.busno IN ( SELECT busno FROM s_user_busi WHERE userid = 168 AND status = 1 ) AND EXISTS ( SELECT * FROM s_user_busi x WHERE A .busno = x.busno AND ((2 <> 0 AND x.compid = 2) OR(2 = 0)) AND x.userid = 168 AND x.status = 1 ) AND EXISTS ( SELECT * FROM T_WARE_CLASS_BASE wc__ WHERE wc__.compid = ( CASE WHEN EXISTS ( SELECT 1 FROM t_ware_class_base twcb WHERE twcb.compid = 2 AND twcb.wareid = b.wareid ) THEN 2 ELSE 0 END ) AND wc__.WAREID = b.wareid AND wc__.CLASSGROUPNO = '42' AND SUBSTR (wc__.CLASSCODE, 1, 4) = '4201' ) AND b.warekind <> 3 AND v_busno_class_set_03大.classgroupno = '03' AND v_busno_class_set_03大.BUSNO = c.busno AND v_busno_class_set_03大.compid = 2 AND v_busno_class_set_03中.classgroupno = '03' AND v_busno_class_set_03中.BUSNO = c.busno AND v_busno_class_set_03中.compid = 2 AND v_busno_class_set_03小.classgroupno = '03' AND v_busno_class_set_03小.BUSNO = c.busno AND v_busno_class_set_03小.compid = 2 AND A .saler <> 802 AND ( A .accdate = TO_DATE ('2023-02-01', 'yyyy-MM-dd' ) ) GROUP BY A .busno, NVL ( v_busno_class_set_03大.classname, '未划分' ), NVL ( v_busno_class_set_03中.classname, '未划分' ), NVL ( v_busno_class_set_03小.classname, '未划分' )").Rows()
-    	rows, err = db.Raw(sqls).Rows()
-    	if err != nil {
-    		panic(err)
-    	}
-    	//关闭连接
-        sqlDB, err := db.DB()
+        "db": *dbtype,
+    }).Info(sql_str)
+         
+    //数据查询
+    var rows *sql.Rows
+    resutData := make([](map[string]interface{}), 0)
+    if *dbtype=="oracle"{
+    	rows, err = dbh2.Raw(sql_str).Rows()
     	if err != nil {
     		panic(err)
     	}
     	
     	cols, _ := rows.Columns()
     	colsize := len(cols)
-    
-    	resutData := make([](map[string]interface{}), 0)
     	for rows.Next() {
     		colsjson := make(map[string]interface{}, colsize)
     		colmeta := make([]interface{}, colsize)
@@ -351,28 +195,15 @@ func querySql(w http.ResponseWriter, r *http.Request) {
     			colsjson[strings.ToLower(cols[i])] = c
     		}
     		resutData = append(resutData, colsjson)
-    		// fmt.Println(args)
     	}
-    	
-    	msg, _ := json.Marshal(JsonRes{Code: 200, Data: resutData})
-    	w.Write(msg)
-        defer rows.Close()	
-        defer sqlDB.Close()
     }else{
-		db, err := sql.Open(d, s)
-		if err != nil {
-			panic(err)
-		}
-		
-		rows, err = db.Query(sqls)
+		rows, err = db.Query(sql_str)
 		if err != nil {
 			panic(err)
 		}
 		
 	    cols, _ := rows.Columns()
     	colsize := len(cols)
-    
-    	resutData := make([](map[string]interface{}), 0)
     	for rows.Next() {
     		colsjson := make(map[string]interface{}, colsize)
     		colmeta  := make([]interface{}, colsize)
@@ -396,14 +227,9 @@ func querySql(w http.ResponseWriter, r *http.Request) {
     			colsjson[strings.ToLower(cols[i])] = c
     		}
     		resutData = append(resutData, colsjson)
-    		// fmt.Println(args)
     	}
-    	
-    	msg, _ := json.Marshal(JsonRes{Code: 200, Data: resutData})
-    	w.Write(msg)
-        defer rows.Close()	
-        defer db.Close()
     }
-
-	return
+	
+	defer rows.Close()	
+	return c.JSON(JsonRes{Code: 200, Data: resutData})
 }
