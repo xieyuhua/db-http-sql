@@ -67,6 +67,11 @@ func main() {
         sqlDB.SetMaxOpenConns(50)
         sqlDB.SetMaxIdleConns(10)
         sqlDB.SetConnMaxLifetime(1800 * time.Second)
+        go func(){
+        	for range time.Tick(time.Duration(10) * time.Second) {
+        	    _ = sqlDB.Ping()
+    	    }
+        }() 
         // defer sqlDB.Close()
     } else {
         //数据库连接
@@ -78,6 +83,11 @@ func main() {
     	db.SetMaxIdleConns(10)//  设置最大空闲连接数, 该数值应该小于等于 SetMaxOpenConns 设置的值
     // 	db.SetConnMaxLifetime(8600)// 设置连接最大生命周期, 默认为 0(不限制), 我不建议设置该值, 只有当 mysql 服务器出现问题, 会导致连接报错, 恢复后可以自动恢复正常, 而我们配置了时间也不能卡住出问题的时间, 配置小还不如使用 SetConnMaxIdleTime 来解决
     	db.SetConnMaxIdleTime(1800 * time.Second) // 设置空闲状态最大生命周期, 该值应小于 mysql.wait_timeout 的值, 以避免被服务端断开连接, 产生报错影响业务， 一般可以配置 1天。
+        go func(){
+        	for range time.Tick(time.Duration(10) * time.Second) {
+        	    _ = db.Ping()
+    	    }
+        }()
     }
     
     
