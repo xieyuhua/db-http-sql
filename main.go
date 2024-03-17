@@ -158,26 +158,7 @@ func querySql(c *fiber.Ctx) error {
                 "error": err,
                 "db": *dbtype,
             }).Info(sql_str)
-            
-            //当前连接是否需要重新连接
-             errors  := db.Ping()
-             if errors != nil {
-                if *dbtype == "oracle" {
-                    //数据库连接
-                	dbh2, _ = gorm.Open(oracle.Open(*dns), &gorm.Config{})
-                    db, _ = dbh2.DB()
-                    db.SetMaxOpenConns(50)
-                    db.SetMaxIdleConns(10)
-                    db.SetConnMaxLifetime(1800 * time.Second)
-                } else {
-                    //数据库连接
-                	db, _ = sql.Open(*dbtype, *dns)
-                	db.SetMaxOpenConns(50)
-                	db.SetMaxIdleConns(10)
-                	db.SetConnMaxIdleTime(1800 * time.Second)
-                }  
-             }
-            
+
             c.JSON(JsonRes{Code: 4000, Msg: fmt.Sprintf(":%v", err)})
 			log.Println("查询sql发生错误", err)
 		}
@@ -187,7 +168,28 @@ func querySql(c *fiber.Ctx) error {
     logs.WithFields(logrus.Fields{
         "db": *dbtype,
     }).Info(sql_str)
-         
+
+    
+    //当前连接是否需要重新连接
+     errors  := db.Ping()
+     if errors != nil {
+	if *dbtype == "oracle" {
+	    //数据库连接
+		dbh2, _ = gorm.Open(oracle.Open(*dns), &gorm.Config{})
+	    db, _ = dbh2.DB()
+	    db.SetMaxOpenConns(50)
+	    db.SetMaxIdleConns(10)
+	    db.SetConnMaxLifetime(1800 * time.Second)
+	} else {
+	    //数据库连接
+		db, _ = sql.Open(*dbtype, *dns)
+		db.SetMaxOpenConns(50)
+		db.SetMaxIdleConns(10)
+		db.SetConnMaxIdleTime(1800 * time.Second)
+	}  
+     }
+
+	
     //数据查询
     var rows *sql.Rows
     resutData := make([](map[string]interface{}), 0)
