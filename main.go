@@ -342,9 +342,9 @@ func querySql(w http.ResponseWriter, r *http.Request) {
     			case nil:
     				c = ""
     			case float64, float32:
-    				c = fmt.Sprintf("%v", *v)
+    				c = fmt.Sprintf("%f", *v)
     			case int64, int32, int16:
-    				c = fmt.Sprintf("%v", *v)
+    				c = fmt.Sprintf("%d", *v)
     			default:
     				c = fmt.Sprintf("%s", *v)
     			}
@@ -387,9 +387,9 @@ func querySql(w http.ResponseWriter, r *http.Request) {
     			case nil:
     				c = ""
     			case float64, float32:
-    				c = fmt.Sprintf("%v", *v)
+    				c = fmt.Sprintf("%f", *v)
     			case int64, int32, int16:
-    				c = fmt.Sprintf("%v", *v)
+    				c = fmt.Sprintf("%d", *v)
     			default:
     				c = fmt.Sprintf("%s", *v)
     			}
